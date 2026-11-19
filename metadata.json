@@ -1,0 +1,11 @@
+{
+  "name": "Caderno Lisboa",
+  "description": "An iPhone-first architectural monograph and Erasmus survival companion for ISCTE School of Architecture students in Lisbon, combining live Google Maps, Street View, transit routing, weather, Gemini intelligence, Google Search grounding, camera Portuguese decoding, and spoken European Portuguese audio.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
