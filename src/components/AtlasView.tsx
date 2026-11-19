@@ -40,6 +40,8 @@ import {
 } from '../types';
 import { handleMapsApiError } from '../utils/mapsQuota';
 import {
+  buildAppleMapsPlaceUrl,
+  buildGoogleMapsPlaceUrl,
   drawStyledRoutePolylines,
   formatDistance,
   haversineMeters,
@@ -97,7 +99,7 @@ const AtlasMapController: React.FC<AtlasMapControllerProps> = ({
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
-  const computedRawRoutesRef = useRef<any[]>([]);
+  const [computedRawRoutes, setComputedRawRoutes] = useState<any[]>([]);
 
   useEffect(() => {
     if (!map || recenterSignal === 0) return;
@@ -131,7 +133,7 @@ const AtlasMapController: React.FC<AtlasMapControllerProps> = ({
   useEffect(() => {
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    computedRawRoutesRef.current = [];
+    setComputedRawRoutes([]);
 
     if (!map || !routesLib || !routeOrigin || !routeDestination) {
       onRoutesCalculated([], null, false);
@@ -157,7 +159,7 @@ const AtlasMapController: React.FC<AtlasMapControllerProps> = ({
           onRoutesCalculated([], 'No direct route found for this travel mode.', false);
           return;
         }
-        computedRawRoutesRef.current = routes;
+        setComputedRawRoutes(routes);
         const parsed = routes.slice(0, 3).map((r) => parseComputedRoute(r, travelMode));
         onRoutesCalculated(parsed, null, false);
       })
@@ -176,23 +178,31 @@ const AtlasMapController: React.FC<AtlasMapControllerProps> = ({
       polylinesRef.current.forEach((p) => p.setMap(null));
       polylinesRef.current = [];
     };
-  }, [map, routesLib, routeOrigin, routeDestination, travelMode, onRoutesCalculated]);
+  }, [
+    map,
+    routesLib,
+    routeOrigin?.lat,
+    routeOrigin?.lng,
+    routeDestination?.lat,
+    routeDestination?.lng,
+    travelMode,
+    onRoutesCalculated,
+  ]);
 
-  // Draw active alternative route polylines whenever selectedRouteIndex or theme changes
+  // Draw active route polylines immediately once computed or when alternative/theme changes
   useEffect(() => {
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
 
-    if (!map || computedRawRoutesRef.current.length === 0) return;
-    const raw =
-      computedRawRoutesRef.current[selectedRouteIndex] || computedRawRoutesRef.current[0];
+    if (!map || computedRawRoutes.length === 0) return;
+    const raw = computedRawRoutes[selectedRouteIndex] || computedRawRoutes[0];
     if (!raw) return;
 
     polylinesRef.current = drawStyledRoutePolylines(map, raw, travelMode, isDark);
     if (raw.viewport) {
       map.fitBounds(raw.viewport, { top: 68, right: 52, bottom: 52, left: 52 });
     }
-  }, [map, selectedRouteIndex, travelMode, isDark, routeOrigin, routeDestination]);
+  }, [map, computedRawRoutes, selectedRouteIndex, travelMode, isDark]);
 
   return null;
 };
@@ -505,7 +515,7 @@ export const AtlasView: React.FC<AtlasViewProps> = ({
     (place: LivePlace) => {
       setSelectedPlace(place);
       setShowStreetView(false);
-      setShowRoute(false);
+      setShowRoute(true);
       setRouteOptions([]);
       setRouteError(null);
       const existing = savedSpots.find((s) => s.id === place.id);
@@ -1192,28 +1202,43 @@ export const AtlasView: React.FC<AtlasViewProps> = ({
                   />
                 </div>
 
-                <div className="flex items-center gap-5 pt-1 text-xs">
-                  {selectedPlace.googleMapsURI && (
-                    <a
-                      href={selectedPlace.googleMapsURI}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-[#0071E3] dark:text-[#0A84FF] font-medium hover:underline"
-                    >
-                      <span>Open in Google Maps</span>
-                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                    </a>
-                  )}
+                <div className="flex flex-wrap items-center gap-3 pt-1 text-xs">
+                  <a
+                    href={buildGoogleMapsPlaceUrl(
+                      selectedPlace.location,
+                      selectedPlace.displayName,
+                      selectedPlace.googleMapsURI
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[#0071E3] dark:text-[#0A84FF] font-medium hover:underline"
+                  >
+                    <span>Google Maps</span>
+                    <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                  </a>
+                  <span className="text-black/20 dark:text-white/20">·</span>
+                  <a
+                    href={buildAppleMapsPlaceUrl(selectedPlace.location, selectedPlace.displayName)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[#1D1D1F] dark:text-[#F5F5F7] font-medium hover:underline"
+                  >
+                    <span>Apple Maps</span>
+                    <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                  </a>
                   {selectedPlace.websiteURI && (
-                    <a
-                      href={selectedPlace.websiteURI}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-[#6E6E73] dark:text-[#98989D] hover:text-[#1D1D1F] dark:hover:text-white hover:underline"
-                    >
-                      <span>Website</span>
-                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                    </a>
+                    <>
+                      <span className="text-black/20 dark:text-white/20">·</span>
+                      <a
+                        href={selectedPlace.websiteURI}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[#6E6E73] dark:text-[#98989D] hover:text-[#1D1D1F] dark:hover:text-white hover:underline"
+                      >
+                        <span>Website</span>
+                        <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                      </a>
+                    </>
                   )}
                 </div>
               </div>

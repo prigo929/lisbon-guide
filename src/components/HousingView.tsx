@@ -24,6 +24,7 @@ import {
   ChevronUp,
   Mountain,
   Building,
+  Square,
 } from 'lucide-react';
 import {
   ISCTE_CAMPUS,
@@ -40,6 +41,8 @@ import {
 } from '../types';
 import { handleMapsApiError } from '../utils/mapsQuota';
 import {
+  buildAppleMapsPlaceUrl,
+  buildGoogleMapsPlaceUrl,
   drawStyledRoutePolylines,
   formatDistance,
   haversineMeters,
@@ -54,6 +57,7 @@ interface HousingViewProps {
   isDark: boolean;
   onSpeakPt: (text: string) => void;
   speakingText: string | null;
+  speakingLoadingText: string | null;
 }
 
 interface HousingRouteOverlayProps {
@@ -80,16 +84,16 @@ const HousingRouteOverlay: React.FC<HousingRouteOverlayProps> = ({
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
-  const rawTransitRef = useRef<any[]>([]);
-  const rawWalkRef = useRef<any | null>(null);
-  const rawBikeRef = useRef<any | null>(null);
+  const [rawRoutes, setRawRoutes] = useState<{
+    transit: any[];
+    walk: any | null;
+    bike: any | null;
+  }>({ transit: [], walk: null, bike: null });
 
   useEffect(() => {
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    rawTransitRef.current = [];
-    rawWalkRef.current = null;
-    rawBikeRef.current = null;
+    setRawRoutes({ transit: [], walk: null, bike: null });
 
     if (!map || !routesLib || !origin) {
       onCommuteMeasured([], null, null, null, false);
@@ -118,9 +122,11 @@ const HousingRouteOverlay: React.FC<HousingRouteOverlayProps> = ({
     Promise.all([compute('TRANSIT'), compute('WALKING'), compute('BICYCLING')])
       .then(([transitRaw, walkRaw, bikeRaw]) => {
         if (cancelled) return;
-        rawTransitRef.current = transitRaw;
-        rawWalkRef.current = walkRaw[0] || null;
-        rawBikeRef.current = bikeRaw[0] || null;
+        setRawRoutes({
+          transit: transitRaw,
+          walk: walkRaw[0] || null,
+          bike: bikeRaw[0] || null,
+        });
 
         const transitParsed = transitRaw
           .slice(0, 3)
@@ -149,9 +155,9 @@ const HousingRouteOverlay: React.FC<HousingRouteOverlayProps> = ({
       polylinesRef.current.forEach((p) => p.setMap(null));
       polylinesRef.current = [];
     };
-  }, [map, routesLib, origin, onCommuteMeasured]);
+  }, [map, routesLib, origin?.lat, origin?.lng, onCommuteMeasured]);
 
-  // Draw active polyline cleanly whenever mode / alternative / theme changes
+  // Draw active polyline cleanly whenever routes compute, mode changes, or alternative/theme changes
   useEffect(() => {
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
@@ -159,17 +165,17 @@ const HousingRouteOverlay: React.FC<HousingRouteOverlayProps> = ({
 
     const activeRaw =
       travelMode === 'TRANSIT'
-        ? rawTransitRef.current[selectedRouteIndex] || rawTransitRef.current[0] || rawWalkRef.current
+        ? rawRoutes.transit[selectedRouteIndex] || rawRoutes.transit[0] || rawRoutes.walk
         : travelMode === 'BICYCLING'
-        ? rawBikeRef.current || rawWalkRef.current
-        : rawWalkRef.current || rawTransitRef.current[0];
+        ? rawRoutes.bike || rawRoutes.walk
+        : rawRoutes.walk || rawRoutes.transit[0];
 
     if (!activeRaw) return;
     polylinesRef.current = drawStyledRoutePolylines(map, activeRaw, travelMode, isDark);
     if (activeRaw.viewport) {
       map.fitBounds(activeRaw.viewport, { top: 56, right: 44, bottom: 44, left: 44 });
     }
-  }, [map, travelMode, selectedRouteIndex, isDark, origin]);
+  }, [map, rawRoutes, travelMode, selectedRouteIndex, isDark]);
 
   return null;
 };
@@ -179,6 +185,7 @@ export const HousingView: React.FC<HousingViewProps> = ({
   isDark,
   onSpeakPt,
   speakingText,
+  speakingLoadingText,
 }) => {
   const placesLib = useMapsLibrary('places');
   const sessionTokenRef = useRef<google.maps.places.AutocompleteSessionToken | null>(null);
@@ -803,10 +810,31 @@ export const HousingView: React.FC<HousingViewProps> = ({
                 <p className="text-xs font-medium text-[#0071E3] dark:text-[#0A84FF]">
                   {activeDossier.vibeTag}
                 </p>
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
                     {activeDossier.name}
                   </h2>
+                  <div className="flex items-center gap-2.5 text-xs font-semibold shrink-0">
+                    <a
+                      href={buildGoogleMapsPlaceUrl(activeDossier.coords, activeDossier.name)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[#0071E3] dark:text-[#0A84FF] hover:underline"
+                    >
+                      <span>Google Maps</span>
+                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                    </a>
+                    <span className="text-black/20 dark:text-white/20">·</span>
+                    <a
+                      href={buildAppleMapsPlaceUrl(activeDossier.coords, activeDossier.name)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[#1D1D1F] dark:text-[#F5F5F7] hover:underline"
+                    >
+                      <span>Apple Maps</span>
+                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                    </a>
+                  </div>
                 </div>
                 <p className="text-sm text-[#6E6E73] dark:text-[#98989D] leading-relaxed">
                   {activeDossier.summary}
@@ -959,12 +987,21 @@ export const HousingView: React.FC<HousingViewProps> = ({
                     <button
                       type="button"
                       onClick={() => onSpeakPt(q.portuguese)}
-                      disabled={speakingText === q.portuguese}
-                      aria-label={`Play Portuguese pronunciation for ${q.english}`}
-                      className="min-w-[38px] min-h-[38px] rounded-full bg-white dark:bg-[#1C1C1E] text-[#0071E3] dark:text-[#0A84FF] shadow-xs flex items-center justify-center hover:scale-105 transition-transform shrink-0 cursor-pointer"
+                      aria-label={
+                        speakingText === q.portuguese
+                          ? `Stop audio for ${q.english}`
+                          : `Play Portuguese pronunciation for ${q.english}`
+                      }
+                      className={`min-w-[40px] min-h-[40px] rounded-full shadow-xs flex items-center justify-center transition-colors shrink-0 cursor-pointer ${
+                        speakingText === q.portuguese
+                          ? 'bg-[#0071E3] dark:bg-[#0A84FF] text-white'
+                          : 'bg-white dark:bg-[#1C1C1E] text-[#0071E3] dark:text-[#0A84FF] hover:scale-105'
+                      }`}
                     >
-                      {speakingText === q.portuguese ? (
+                      {speakingLoadingText === q.portuguese ? (
                         <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : speakingText === q.portuguese ? (
+                        <Square className="w-3.5 h-3.5 fill-current" />
                       ) : (
                         <Volume2 className="w-4 h-4" />
                       )}

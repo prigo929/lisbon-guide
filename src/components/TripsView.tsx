@@ -30,7 +30,12 @@ import { ISCTE_CAMPUS, TRIP_DESTINATIONS } from '../data/lisbonData';
 import { CuratedTripPreset, LatLngLiteral, RouteSummary, TripPlan, WeatherSnapshot } from '../types';
 import { downloadTripAsIcs } from '../utils/icsExport';
 import { handleMapsApiError, notifyMapsQuotaExceeded } from '../utils/mapsQuota';
-import { drawStyledRoutePolylines, parseComputedRoute } from '../utils/routeHelpers';
+import {
+  buildAppleMapsDirectionsUrl,
+  buildGoogleMapsDirectionsUrl,
+  drawStyledRoutePolylines,
+  parseComputedRoute,
+} from '../utils/routeHelpers';
 import { RouteBreakdown } from './RouteBreakdown';
 import { MapLayersSync, MapLayerToolbar } from './MapLayerControls';
 
@@ -80,12 +85,12 @@ const TripRouteOverlay: React.FC<TripRouteOverlayProps> = ({
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
-  const rawRoutesRef = useRef<any[]>([]);
+  const [rawRoutes, setRawRoutes] = useState<any[]>([]);
 
   useEffect(() => {
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    rawRoutesRef.current = [];
+    setRawRoutes([]);
 
     if (!map || !routesLib) return;
     let cancelled = false;
@@ -101,13 +106,12 @@ const TripRouteOverlay: React.FC<TripRouteOverlayProps> = ({
       })
       .then(({ routes }: { routes: any[] }) => {
         if (cancelled) return;
-        rawRoutesRef.current = routes || [];
-        const parsed = (routes || [])
-          .slice(0, 2)
-          .map((r: any) => parseComputedRoute(r, 'TRANSIT'));
+        const list = routes || [];
+        setRawRoutes(list);
+        const parsed = list.slice(0, 3).map((r: any) => parseComputedRoute(r, 'TRANSIT'));
         onRoutesComputed(
           parsed,
-          parsed.length === 0 ? 'Live transit route unavailable at this hour; see station notes below.' : null,
+          parsed.length === 0 ? 'Live transit route unavailable at this hour; use Google or Apple Maps below.' : null,
           false
         );
       })
@@ -122,20 +126,20 @@ const TripRouteOverlay: React.FC<TripRouteOverlayProps> = ({
       polylinesRef.current.forEach((p) => p.setMap(null));
       polylinesRef.current = [];
     };
-  }, [map, routesLib, destination, onRoutesComputed]);
+  }, [map, routesLib, destination.lat, destination.lng, onRoutesComputed]);
 
   useEffect(() => {
     polylinesRef.current.forEach((p) => p.setMap(null));
     polylinesRef.current = [];
-    if (!map || rawRoutesRef.current.length === 0) return;
+    if (!map || rawRoutes.length === 0) return;
 
-    const raw = rawRoutesRef.current[selectedRouteIndex] || rawRoutesRef.current[0];
+    const raw = rawRoutes[selectedRouteIndex] || rawRoutes[0];
     if (!raw) return;
     polylinesRef.current = drawStyledRoutePolylines(map, raw, 'TRANSIT', isDark);
     if (raw.viewport) {
       map.fitBounds(raw.viewport, { top: 48, right: 40, bottom: 40, left: 40 });
     }
-  }, [map, selectedRouteIndex, isDark, destination]);
+  }, [map, rawRoutes, selectedRouteIndex, isDark]);
 
   return null;
 };
@@ -516,9 +520,31 @@ export const TripsView: React.FC<TripsViewProps> = ({
                   destinationLabel={activePreset.name}
                 />
               ) : (
-                <p className="text-xs text-[#6E6E73] dark:text-[#98989D]">
-                  {routeError || activePreset.transitTag}
-                </p>
+                <div className="space-y-2.5">
+                  <p className="text-xs text-[#6E6E73] dark:text-[#98989D]">
+                    {routeError || activePreset.transitTag}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <a
+                      href={buildGoogleMapsDirectionsUrl(ISCTE_CAMPUS.location, activePreset.coords, 'TRANSIT')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[38px] px-3 rounded-xl bg-[#0071E3] dark:bg-[#0A84FF] text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:opacity-90"
+                    >
+                      <span>Google Maps</span>
+                      <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    </a>
+                    <a
+                      href={buildAppleMapsDirectionsUrl(ISCTE_CAMPUS.location, activePreset.coords, 'TRANSIT')}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[38px] px-3 rounded-xl bg-white dark:bg-[#1C1C1E] border border-black/[0.08] dark:border-white/[0.10] text-[#1D1D1F] dark:text-[#F5F5F7] text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:opacity-90"
+                    >
+                      <span>Apple Maps</span>
+                      <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
+                    </a>
+                  </div>
+                </div>
               )}
             </div>
           </div>

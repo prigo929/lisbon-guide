@@ -1,4 +1,4 @@
-export type AppTab = 'atlas' | 'housing' | 'trips' | 'guide';
+export type AppTab = 'mystay' | 'atlas' | 'housing' | 'trips' | 'guide';
 
 export type AtlasCategory =
   | 'architecture'

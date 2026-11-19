@@ -281,3 +281,26 @@ export function buildGoogleMapsDirectionsUrl(
     mode === 'TRANSIT' ? 'transit' : mode === 'BICYCLING' ? 'bicycling' : 'walking';
   return `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}&travelmode=${modeParam}`;
 }
+
+export function buildAppleMapsDirectionsUrl(
+  origin: LatLngLiteral,
+  destination: LatLngLiteral,
+  mode: 'TRANSIT' | 'WALKING' | 'BICYCLING'
+): string {
+  const dirflg = mode === 'TRANSIT' ? 'r' : mode === 'BICYCLING' ? 'c' : 'w';
+  return `https://maps.apple.com/?saddr=${origin.lat},${origin.lng}&daddr=${destination.lat},${destination.lng}&dirflg=${dirflg}`;
+}
+
+export function buildGoogleMapsPlaceUrl(
+  location: LatLngLiteral,
+  label?: string,
+  existingUri?: string | null
+): string {
+  if (existingUri) return existingUri;
+  const query = label ? encodeURIComponent(`${label}, Lisbon, Portugal`) : `${location.lat},${location.lng}`;
+  return `https://www.google.com/maps/search/?api=1&query=${query}`;
+}
+
+export function buildAppleMapsPlaceUrl(location: LatLngLiteral, label: string): string {
+  return `https://maps.apple.com/?q=${encodeURIComponent(label)}&ll=${location.lat},${location.lng}`;
+}

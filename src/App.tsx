@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { APIProvider } from '@vis.gl/react-google-maps';
-import { Map as MapIcon, Building2, Compass, BookOpenCheck, Sun, Moon } from 'lucide-react';
+import { Home, Map as MapIcon, Building2, Compass, BookOpenCheck, Sun, Moon } from 'lucide-react';
 import {
   AppTab,
   BureaucracyVerification,
@@ -23,20 +23,31 @@ import {
 } from './utils/storage';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { MyStayView } from './components/MyStayView';
 import { AtlasView } from './components/AtlasView';
 import { HousingView } from './components/HousingView';
 import { TripsView } from './components/TripsView';
 import { GuideView } from './components/GuideView';
 
 const NAV_ITEMS: Array<{ id: AppTab; label: string; icon: React.FC<{ className?: string }> }> = [
+  { id: 'mystay', label: 'My Stay', icon: Home },
   { id: 'atlas', label: 'Atlas', icon: MapIcon },
   { id: 'housing', label: 'Housing', icon: Building2 },
   { id: 'trips', label: 'Trips', icon: Compass },
   { id: 'guide', label: 'Guide', icon: BookOpenCheck },
 ];
 
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = window.atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>('atlas');
+  const [activeTab, setActiveTab] = useState<AppTab>('mystay');
   const [isDark, setIsDark] = useState<boolean>(() => {
     if (typeof document !== 'undefined') {
       return document.documentElement.classList.contains('dark');
@@ -66,9 +77,17 @@ export default function App() {
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+
+  // Robust Spoken Portuguese Audio Engine State
   const [speakingText, setSpeakingText] = useState<string | null>(null);
-  const audioCacheRef = useRef<Record<string, string>>({});
-  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [speakingLoadingText, setSpeakingLoadingText] = useState<string | null>(null);
+  const audioCacheRef = useRef<Record<string, { bytes: Uint8Array; mimeType: string }>>({});
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const activeSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const activeAudioElRef = useRef<HTMLAudioElement | null>(null);
+  const activeObjectUrlRef = useRef<string | null>(null);
+  const speechGuardTimerRef = useRef<number | null>(null);
+  const playbackRequestIdRef = useRef<number>(0);
 
   // Sync dark mode class on <html> and dynamic iOS status bar theme-color
   useEffect(() => {
@@ -110,64 +129,230 @@ export default function App() {
     return () => window.removeEventListener('gmp-quota-exceeded', onQuota);
   }, []);
 
-  const handleSpeakPt = useCallback(
-    async (text: string) => {
-      if (!text.trim()) return;
+  const stopAllAudio = useCallback(() => {
+    playbackRequestIdRef.current += 1;
+    if (speechGuardTimerRef.current) {
+      window.clearTimeout(speechGuardTimerRef.current);
+      speechGuardTimerRef.current = null;
+    }
+    if (activeSourceRef.current) {
       try {
-        if (activeAudioRef.current) {
-          activeAudioRef.current.pause();
-          activeAudioRef.current = null;
-        }
-        if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-          window.speechSynthesis.cancel();
-          const voices = window.speechSynthesis.getVoices();
-          const ptPtVoice =
-            voices.find((v) => v.lang.toLowerCase() === 'pt-pt') ||
-            voices.find((v) => v.lang.toLowerCase().startsWith('pt-pt'));
-          if (ptPtVoice) {
-            setSpeakingText(text);
-            const utter = new SpeechSynthesisUtterance(text);
-            utter.voice = ptPtVoice;
-            utter.lang = 'pt-PT';
-            utter.rate = 0.92;
-            utter.onend = () => setSpeakingText(null);
-            utter.onerror = () => setSpeakingText(null);
-            window.speechSynthesis.speak(utter);
-            return;
-          }
-        }
+        activeSourceRef.current.onended = null;
+        activeSourceRef.current.stop();
+        activeSourceRef.current.disconnect();
+      } catch {
+        // Already stopped
+      }
+      activeSourceRef.current = null;
+    }
+    if (activeAudioElRef.current) {
+      try {
+        activeAudioElRef.current.pause();
+        activeAudioElRef.current.currentTime = 0;
+      } catch {
+        // Ignore
+      }
+      activeAudioElRef.current = null;
+    }
+    if (activeObjectUrlRef.current) {
+      URL.revokeObjectURL(activeObjectUrlRef.current);
+      activeObjectUrlRef.current = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore
+      }
+    }
+    setSpeakingText(null);
+    setSpeakingLoadingText(null);
+  }, []);
 
+  useEffect(() => {
+    return () => {
+      stopAllAudio();
+    };
+  }, [stopAllAudio]);
+
+  const speakWithBrowserFallback = useCallback(
+    (text: string, requestId: number): boolean => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+        return false;
+      }
+      try {
+        window.speechSynthesis.cancel();
+        const voices = window.speechSynthesis.getVoices();
+        const ptVoice =
+          voices.find((v) => v.lang.toLowerCase() === 'pt-pt') ||
+          voices.find((v) => v.lang.toLowerCase().startsWith('pt-pt')) ||
+          voices.find((v) => v.lang.toLowerCase().startsWith('pt'));
+
+        setSpeakingLoadingText(null);
         setSpeakingText(text);
 
-        let dataUrl = audioCacheRef.current[text];
-        if (!dataUrl) {
+        // Short 60ms delay after cancel() avoids Chrome/WebKit bug that drops utterances
+        window.setTimeout(() => {
+          if (playbackRequestIdRef.current !== requestId) return;
+          const utter = new SpeechSynthesisUtterance(text);
+          if (ptVoice) utter.voice = ptVoice;
+          utter.lang = 'pt-PT';
+          utter.rate = 0.92;
+          utter.onend = () => {
+            if (playbackRequestIdRef.current === requestId) {
+              if (speechGuardTimerRef.current) window.clearTimeout(speechGuardTimerRef.current);
+              setSpeakingText(null);
+            }
+          };
+          utter.onerror = () => {
+            if (playbackRequestIdRef.current === requestId) {
+              if (speechGuardTimerRef.current) window.clearTimeout(speechGuardTimerRef.current);
+              setSpeakingText(null);
+            }
+          };
+          window.speechSynthesis.speak(utter);
+
+          // Safety timeout so UI never stays stuck if iframe mutes speechSynthesis silently
+          speechGuardTimerRef.current = window.setTimeout(() => {
+            if (playbackRequestIdRef.current === requestId) {
+              setSpeakingText(null);
+            }
+          }, Math.max(6000, text.length * 140));
+        }, 60);
+
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    []
+  );
+
+  const handleSpeakPt = useCallback(
+    async (text: string) => {
+      const cleaned = text.trim();
+      if (!cleaned) return;
+
+      // Tap again on currently playing/loading phrase to stop cleanly
+      if (speakingText === cleaned || speakingLoadingText === cleaned) {
+        stopAllAudio();
+        return;
+      }
+
+      stopAllAudio();
+      const requestId = playbackRequestIdRef.current;
+
+      // CRITICAL for iPhone Safari & Chrome: create/resume AudioContext synchronously inside user tap
+      let ctx: AudioContext | null = null;
+      try {
+        const AudioCtxCtor =
+          window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+        if (AudioCtxCtor) {
+          if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+            audioCtxRef.current = new AudioCtxCtor();
+          }
+          ctx = audioCtxRef.current;
+          if (ctx.state === 'suspended') {
+            void ctx.resume();
+          }
+        }
+      } catch {
+        ctx = null;
+      }
+
+      // Offline-only immediate fallback
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        if (!speakWithBrowserFallback(cleaned, requestId)) {
+          notify('Offline audio voice unavailable on this device.');
+        }
+        return;
+      }
+
+      try {
+        let cached = audioCacheRef.current[cleaned];
+        if (!cached) {
+          setSpeakingLoadingText(cleaned);
           const res = await fetch('/api/ai/speak-pt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify({ text: cleaned }),
           });
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
+          if (playbackRequestIdRef.current !== requestId) return;
           if (!res.ok || !data?.audioBase64) {
             throw new Error(data?.error || 'Could not generate Portuguese audio.');
           }
-          dataUrl = `data:${data.mimeType || 'audio/wav'};base64,${data.audioBase64}`;
-          audioCacheRef.current[text] = dataUrl;
+          cached = {
+            bytes: base64ToUint8Array(data.audioBase64),
+            mimeType: data.mimeType || 'audio/wav',
+          };
+          audioCacheRef.current[cleaned] = cached;
         }
 
-        const audio = new Audio(dataUrl);
-        activeAudioRef.current = audio;
-        audio.onended = () => setSpeakingText(null);
+        if (playbackRequestIdRef.current !== requestId) return;
+        setSpeakingLoadingText(null);
+        setSpeakingText(cleaned);
+
+        // Primary path: Web Audio API via synchronously-unlocked AudioContext (works reliably on iOS Safari & Chrome)
+        if (ctx) {
+          try {
+            if (ctx.state === 'suspended') {
+              await ctx.resume();
+            }
+            const bufferCopy = new Uint8Array(cached.bytes).buffer;
+            const decoded = await ctx.decodeAudioData(bufferCopy);
+            if (playbackRequestIdRef.current !== requestId) return;
+            const source = ctx.createBufferSource();
+            source.buffer = decoded;
+            source.connect(ctx.destination);
+            activeSourceRef.current = source;
+            source.onended = () => {
+              if (playbackRequestIdRef.current === requestId) {
+                activeSourceRef.current = null;
+                setSpeakingText(null);
+              }
+            };
+            source.start(0);
+            return;
+          } catch (decodeErr) {
+            console.warn('AudioContext decode failed, trying HTMLAudio Blob fallback:', decodeErr);
+          }
+        }
+
+        // Secondary path: Blob URL on HTMLAudioElement
+        const blob = new Blob([cached.bytes.slice().buffer], { type: cached.mimeType });
+        const objectUrl = URL.createObjectURL(blob);
+        activeObjectUrlRef.current = objectUrl;
+        const audio = new Audio(objectUrl);
+        activeAudioElRef.current = audio;
+        audio.onended = () => {
+          if (playbackRequestIdRef.current === requestId) {
+            setSpeakingText(null);
+            if (activeObjectUrlRef.current === objectUrl) {
+              URL.revokeObjectURL(objectUrl);
+              activeObjectUrlRef.current = null;
+            }
+          }
+        };
         audio.onerror = () => {
-          setSpeakingText(null);
-          notify('Unable to play audio on this device.');
+          if (playbackRequestIdRef.current === requestId) {
+            setSpeakingText(null);
+            if (!speakWithBrowserFallback(cleaned, requestId)) {
+              notify('Unable to play audio on this device.');
+            }
+          }
         };
         await audio.play();
       } catch (err: any) {
-        setSpeakingText(null);
-        notify(err?.message || 'Unable to play European Portuguese audio right now.');
+        if (playbackRequestIdRef.current !== requestId) return;
+        setSpeakingLoadingText(null);
+        if (!speakWithBrowserFallback(cleaned, requestId)) {
+          setSpeakingText(null);
+          notify(err?.message || 'Unable to play European Portuguese audio right now.');
+        }
       }
     },
-    [notify]
+    [notify, speakingText, speakingLoadingText, stopAllAudio, speakWithBrowserFallback]
   );
 
   const handleToggleSaveSpot = useCallback((place: LivePlace, note = '') => {
@@ -280,17 +465,17 @@ export default function App() {
 
       {/* Apple-style Frosted Translucent Header */}
       <header className="sticky top-0 z-30 bg-[#F5F5F7]/80 dark:bg-[#0B0B0D]/80 backdrop-blur-xl border-b border-black/[0.06] dark:border-white/[0.08] pt-safe">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-[52px] lg:h-[60px] flex items-center justify-between gap-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-[52px] lg:h-[60px] flex items-center justify-between gap-6">
           {/* Zone 1: Clean single-line brand wordmark */}
           <button
             type="button"
-            onClick={() => setActiveTab('atlas')}
+            onClick={() => setActiveTab('mystay')}
             className="text-base sm:text-lg font-semibold tracking-tight text-[#1D1D1F] dark:text-[#F5F5F7] whitespace-nowrap shrink-0 cursor-pointer"
           >
             Caderno Lisboa
           </button>
 
-          {/* Zone 2: Clean single-line nav links (Desktop) */}
+          {/* Zone 2: Clean 5 single-line nav links (Desktop) */}
           <nav
             aria-label="Primary navigation"
             className="hidden md:flex items-center gap-7 text-sm font-medium"
@@ -332,6 +517,15 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1">
+        {activeTab === 'mystay' && (
+          <MyStayView
+            checklistDone={checklistDone}
+            onToggleChecklistStep={handleToggleChecklistStep}
+            verifications={verifications}
+            onSaveVerification={handleSaveVerification}
+            onNotify={notify}
+          />
+        )}
         {activeTab === 'atlas' && (
           <AtlasView
             savedSpots={savedSpots}
@@ -348,6 +542,7 @@ export default function App() {
             isDark={isDark}
             onSpeakPt={handleSpeakPt}
             speakingText={speakingText}
+            speakingLoadingText={speakingLoadingText}
           />
         )}
         {activeTab === 'trips' && (
@@ -364,25 +559,21 @@ export default function App() {
           <GuideView
             onSpeakPt={handleSpeakPt}
             speakingText={speakingText}
-            checklistDone={checklistDone}
-            onToggleChecklistStep={handleToggleChecklistStep}
-            verifications={verifications}
-            onSaveVerification={handleSaveVerification}
+            speakingLoadingText={speakingLoadingText}
             decodedHistory={decodedHistory}
             onSaveDecoded={handleSaveDecoded}
             savedSpots={savedSpots}
             onRemoveSavedSpot={handleRemoveSavedSpot}
-            onNotify={notify}
           />
         )}
       </main>
 
-      {/* iOS Translucent Bottom Tab Bar */}
+      {/* iOS Translucent 5-Tab Bottom Bar */}
       <nav
         aria-label="Mobile navigation"
         className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#F5F5F7]/85 dark:bg-[#1C1C1E]/85 backdrop-blur-xl border-t border-black/[0.08] dark:border-white/[0.10] pb-safe"
       >
-        <div className="grid grid-cols-4 h-16">
+        <div className="grid grid-cols-5 h-16">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const active = activeTab === item.id;

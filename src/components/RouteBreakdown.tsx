@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { LatLngLiteral, RouteSummary, TransitStepInfo } from '../types';
 import {
+  buildAppleMapsDirectionsUrl,
   buildGoogleMapsDirectionsUrl,
   formatDistance,
   formatDuration,
@@ -95,6 +96,7 @@ export const RouteBreakdown: React.FC<RouteBreakdownProps> = ({
   if (!activeRoute) return null;
 
   const googleDirUrl = buildGoogleMapsDirectionsUrl(origin, destination, activeRoute.travelMode);
+  const appleDirUrl = buildAppleMapsDirectionsUrl(origin, destination, activeRoute.travelMode);
   const totalWalkMinutes = activeRoute.steps
     .filter((s) => s.travelMode === 'WALKING')
     .reduce((acc, s) => acc + s.durationMinutes, 0);
@@ -105,7 +107,7 @@ export const RouteBreakdown: React.FC<RouteBreakdownProps> = ({
       {routes.length > 1 && (
         <div className="space-y-1.5">
           <p className="text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
-            {routes.length} live route options
+            {routes.length} live route options · Option {selectedIndex + 1} shown on map
           </p>
           <div className="space-y-1.5">
             {routes.map((r, idx) => {
@@ -141,56 +143,66 @@ export const RouteBreakdown: React.FC<RouteBreakdownProps> = ({
         </div>
       )}
 
-      {/* Primary Route Header */}
+      {/* Primary Route Header + Dual Maps Handoff */}
       <div className="rounded-2xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-3.5 space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1.5 min-w-0">
-            <div className="flex items-baseline gap-2 tabular-nums">
-              <span className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
-                {formatDuration(activeRoute.durationMinutes)}
+        <div className="space-y-1.5 min-w-0">
+          <div className="flex items-baseline gap-2 tabular-nums">
+            <span className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+              {formatDuration(activeRoute.durationMinutes)}
+            </span>
+            <span className="text-xs text-[#6E6E73] dark:text-[#98989D]">
+              · {formatDistance(activeRoute.distanceMeters)}
+            </span>
+            {activeRoute.fareText && (
+              <span className="text-xs font-medium text-[#0071E3] dark:text-[#0A84FF]">
+                · {activeRoute.fareText}
               </span>
-              <span className="text-xs text-[#6E6E73] dark:text-[#98989D]">
-                · {formatDistance(activeRoute.distanceMeters)}
-              </span>
-              {activeRoute.fareText && (
-                <span className="text-xs font-medium text-[#0071E3] dark:text-[#0A84FF]">
-                  · {activeRoute.fareText}
-                </span>
-              )}
-            </div>
-
-            {activeRoute.travelMode === 'TRANSIT' && (
-              <TransitChainBadges steps={activeRoute.steps} />
-            )}
-
-            {(activeRoute.departureTimeText || totalWalkMinutes > 0) && (
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[#6E6E73] dark:text-[#98989D] tabular-nums">
-                {activeRoute.departureTimeText && activeRoute.arrivalTimeText && (
-                  <span className="inline-flex items-center gap-1">
-                    <Clock className="w-3 h-3" aria-hidden="true" />
-                    <span>
-                      {activeRoute.departureTimeText} → {activeRoute.arrivalTimeText}
-                    </span>
-                  </span>
-                )}
-                {activeRoute.travelMode === 'TRANSIT' && totalWalkMinutes > 0 && (
-                  <span className="inline-flex items-center gap-1">
-                    <Footprints className="w-3 h-3" aria-hidden="true" />
-                    <span>{totalWalkMinutes} min walking total</span>
-                  </span>
-                )}
-              </div>
             )}
           </div>
 
+          {activeRoute.travelMode === 'TRANSIT' && (
+            <TransitChainBadges steps={activeRoute.steps} />
+          )}
+
+          {(activeRoute.departureTimeText || totalWalkMinutes > 0) && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[#6E6E73] dark:text-[#98989D] tabular-nums">
+              {activeRoute.departureTimeText && activeRoute.arrivalTimeText && (
+                <span className="inline-flex items-center gap-1">
+                  <Clock className="w-3 h-3" aria-hidden="true" />
+                  <span>
+                    {activeRoute.departureTimeText} → {activeRoute.arrivalTimeText}
+                  </span>
+                </span>
+              )}
+              {activeRoute.travelMode === 'TRANSIT' && totalWalkMinutes > 0 && (
+                <span className="inline-flex items-center gap-1">
+                  <Footprints className="w-3 h-3" aria-hidden="true" />
+                  <span>{totalWalkMinutes} min walking total</span>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Direct iPhone Navigation Handoff: Google Maps + Apple Maps */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
           <a
             href={googleDirUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="min-h-[34px] px-3 rounded-full bg-[#0071E3]/10 dark:bg-[#0A84FF]/15 text-[#0071E3] dark:text-[#0A84FF] text-xs font-semibold inline-flex items-center gap-1 hover:opacity-80 shrink-0"
+            className="min-h-[38px] px-3 rounded-xl bg-[#0071E3] dark:bg-[#0A84FF] text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:opacity-90 transition-opacity whitespace-nowrap"
           >
-            <span>Navigate</span>
-            <ExternalLink className="w-3 h-3" aria-hidden="true" />
+            <span>Google Maps</span>
+            <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
+          </a>
+          <a
+            href={appleDirUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="min-h-[38px] px-3 rounded-xl bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7] border border-black/[0.06] dark:border-white/[0.10] text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:bg-black/[0.07] dark:hover:bg-white/[0.14] transition-colors whitespace-nowrap"
+          >
+            <span>Apple Maps</span>
+            <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
           </a>
         </div>
 

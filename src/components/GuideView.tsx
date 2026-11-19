@@ -3,10 +3,8 @@ import {
   Camera,
   Upload,
   Volume2,
+  Square,
   Loader2,
-  CheckCircle2,
-  Circle,
-  RefreshCw,
   ExternalLink,
   AlertTriangle,
   Trash2,
@@ -15,47 +13,37 @@ import {
   X,
   TrainFront,
   Ticket,
-  GraduationCap,
-  ShieldAlert,
   Search,
   ChevronDown,
   ChevronUp,
-  MapPin,
+  Bookmark,
+  ShieldAlert,
 } from 'lucide-react';
 import {
-  BUREAUCRACY_CHECKLISTS,
-  ISCTE_CAMPUS_INFO,
   LISBON_ESSENTIALS_INFO,
   LISBON_TRANSIT_LINES,
   NAVEGANTE_FARES,
   PORTUGUESE_GLOSSARY,
   SURVIVAL_PHRASES,
 } from '../data/lisbonData';
-import {
-  BureaucracyVerification,
-  DecodedPortuguese,
-  GlossaryTerm,
-  PhraseEntry,
-  SavedSpot,
-} from '../types';
+import { DecodedPortuguese, GlossaryTerm, PhraseEntry, SavedSpot } from '../types';
+import { buildAppleMapsPlaceUrl, buildGoogleMapsPlaceUrl } from '../utils/routeHelpers';
 
 interface GuideViewProps {
   onSpeakPt: (text: string) => void;
   speakingText: string | null;
-  checklistDone: Record<string, boolean>;
-  onToggleChecklistStep: (stepId: string) => void;
-  verifications: Record<string, BureaucracyVerification>;
-  onSaveVerification: (topicId: string, data: BureaucracyVerification) => void;
+  speakingLoadingText: string | null;
   decodedHistory: DecodedPortuguese[];
   onSaveDecoded: (item: DecodedPortuguese) => void;
   savedSpots: SavedSpot[];
   onRemoveSavedSpot: (id: string) => void;
-  onNotify: (msg: string) => void;
 }
 
-type GuideSubTab = 'essentials' | 'checklists' | 'phrases' | 'decoder';
+type GuideSubTab = 'transit' | 'phrases' | 'decoder' | 'saved';
 
-async function resizeImageToBase64(file: File): Promise<{ base64: string; mimeType: string; previewUrl: string }> {
+async function resizeImageToBase64(
+  file: File
+): Promise<{ base64: string; mimeType: string; previewUrl: string }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -105,18 +93,13 @@ const SAMPLE_DECODER_SNIPPETS = [
 export const GuideView: React.FC<GuideViewProps> = ({
   onSpeakPt,
   speakingText,
-  checklistDone,
-  onToggleChecklistStep,
-  verifications,
-  onSaveVerification,
+  speakingLoadingText,
   decodedHistory,
   onSaveDecoded,
   savedSpots,
   onRemoveSavedSpot,
-  onNotify,
 }) => {
-  // Default to structured zero-AI Lisbon Transit & Essentials handbook!
-  const [subTab, setSubTab] = useState<GuideSubTab>('essentials');
+  const [subTab, setSubTab] = useState<GuideSubTab>('phrases');
 
   // Phrases & Glossary state (Zero-AI searchable)
   const [phraseCat, setPhraseCat] = useState<'all' | PhraseEntry['category']>('all');
@@ -147,9 +130,6 @@ export const GuideView: React.FC<GuideViewProps> = ({
   const [decodedResult, setDecodedResult] = useState<DecodedPortuguese | null>(
     decodedHistory[0] || null
   );
-
-  const [verifyingTopic, setVerifyingTopic] = useState<string | null>(null);
-  const [verifyError, setVerifyError] = useState<Record<string, string>>({});
 
   const handleImageFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -224,29 +204,6 @@ export const GuideView: React.FC<GuideViewProps> = ({
     }
   };
 
-  const handleVerifyTopic = async (topicId: string, topic: string, context: string) => {
-    setVerifyingTopic(topicId);
-    setVerifyError((prev) => ({ ...prev, [topicId]: '' }));
-    try {
-      const res = await fetch('/api/ai/bureaucracy-check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic, detail: context }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Verification failed.');
-      onSaveVerification(topicId, data);
-      onNotify(`Updated latest Lisbon rules for ${topic}.`);
-    } catch (err: any) {
-      setVerifyError((prev) => ({
-        ...prev,
-        [topicId]: err?.message || 'Unable to verify online rules.',
-      }));
-    } finally {
-      setVerifyingTopic(null);
-    }
-  };
-
   const filteredPhrases = useMemo(() => {
     const q = phraseQuery.trim().toLowerCase();
     return SURVIVAL_PHRASES.filter((p) => {
@@ -273,32 +230,51 @@ export const GuideView: React.FC<GuideViewProps> = ({
     });
   }, [glossaryCat, phraseQuery]);
 
-  const totalSteps = BUREAUCRACY_CHECKLISTS.reduce((acc, c) => acc + c.steps.length, 0);
-  const completedSteps = BUREAUCRACY_CHECKLISTS.reduce(
-    (acc, c) => acc + c.steps.filter((s) => checklistDone[s.id]).length,
-    0
-  );
+  const renderSpeakButton = (ptText: string, label: string, sizeClass = 'min-w-[44px] min-h-[44px]') => {
+    const isLoading = speakingLoadingText === ptText;
+    const isPlaying = speakingText === ptText;
+    return (
+      <button
+        type="button"
+        onClick={() => onSpeakPt(ptText)}
+        aria-label={isPlaying ? `Stop audio for ${label}` : `Play European Portuguese audio for ${label}`}
+        className={`${sizeClass} rounded-full flex items-center justify-center transition-colors shrink-0 cursor-pointer ${
+          isPlaying
+            ? 'bg-[#0071E3] dark:bg-[#0A84FF] text-white shadow-sm'
+            : 'bg-[#0071E3]/10 dark:bg-[#0A84FF]/15 text-[#0071E3] dark:text-[#0A84FF] hover:bg-[#0071E3] hover:text-white dark:hover:bg-[#0A84FF] dark:hover:text-white'
+        }`}
+      >
+        {isLoading ? (
+          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" />
+        ) : isPlaying ? (
+          <Square className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
+        ) : (
+          <Volume2 className="w-4 h-4" aria-hidden="true" />
+        )}
+      </button>
+    );
+  };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-7 pb-24 lg:pb-12 space-y-7">
-      {/* Header + 4-way Apple Segmented Control */}
+      {/* Header + 4-way Pocket Toolkit Control */}
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
         <div>
           <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
-            Structured Lisbon Erasmus handbook · Instant & offline-ready
+            On-the-street Lisbon toolkit · Spoken pt-PT, transit lines & camera lens
           </p>
           <h1 className="text-3xl sm:text-4xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-1">
-            Lisbon Guide & Portuguese
+            Pocket Guide
           </h1>
         </div>
 
         <div className="inline-flex p-1 rounded-2xl bg-black/[0.05] dark:bg-white/[0.08] overflow-x-auto self-start lg:self-auto max-w-full">
           {(
             [
-              { id: 'essentials', label: 'Transit & Life' },
-              { id: 'checklists', label: `Checklists (${completedSteps}/${totalSteps})` },
-              { id: 'phrases', label: 'Portuguese' },
+              { id: 'phrases', label: 'Spoken PT' },
+              { id: 'transit', label: 'Transit Network' },
               { id: 'decoder', label: 'Camera Lens' },
+              { id: 'saved', label: `Saved (${savedSpots.length})` },
             ] as Array<{ id: GuideSubTab; label: string }>
           ).map((t) => (
             <button
@@ -317,410 +293,25 @@ export const GuideView: React.FC<GuideViewProps> = ({
         </div>
       </div>
 
-      {/* SUB-TAB 1: STRUCTURED LISBON TRANSIT, ISCTE & DAILY ESSENTIALS (100% ZERO-AI) */}
-      {subTab === 'essentials' && (
-        <div className="space-y-6">
-          {/* Lisbon Metro & Commuter Rail System */}
-          <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-            <div className="flex items-start justify-between gap-3 pb-4 border-b border-black/[0.06] dark:border-white/[0.08]">
-              <div>
-                <p className="text-xs font-medium text-[#0071E3] dark:text-[#0A84FF]">
-                  Metro de Lisboa · CP Trains · Fertagus
-                </p>
-                <h2 className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
-                  Lisbon Transit Network Guide
-                </h2>
-              </div>
-              <TrainFront className="w-6 h-6 text-[#0071E3] dark:text-[#0A84FF] shrink-0" aria-hidden="true" />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-              {LISBON_TRANSIT_LINES.map((line) => (
-                <div
-                  key={line.id}
-                  className="p-4 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] space-y-2"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span
-                      className="px-2.5 py-1 rounded-lg text-xs font-semibold"
-                      style={{ backgroundColor: line.color, color: line.textColor }}
-                    >
-                      {line.badge}
-                    </span>
-                    <span className="text-[11px] text-[#6E6E73] dark:text-[#98989D] tabular-nums">
-                      {line.frequency}
-                    </span>
-                  </div>
-                  <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
-                    {line.name}
-                  </h3>
-                  <p className="text-xs text-[#6E6E73] dark:text-[#98989D] leading-relaxed">
-                    {line.route}
-                  </p>
-                  <p className="text-xs text-[#1D1D1F] dark:text-[#F5F5F7] pt-1.5 border-t border-black/[0.06] dark:border-white/[0.08] leading-relaxed">
-                    <strong className="text-[#0071E3] dark:text-[#0A84FF]">For ISCTE:</strong>{' '}
-                    {line.iscteNote}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* Navegante Pass & Ticketing Matrix */}
-          <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-            <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-black/[0.06] dark:border-white/[0.08]">
-              <div>
-                <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
-                  Monthly passes & pay-as-you-go
-                </p>
-                <h2 className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
-                  Navegante & Train Tickets
-                </h2>
-              </div>
-              <Ticket className="w-5 h-5 text-[#0071E3] dark:text-[#0A84FF] shrink-0" aria-hidden="true" />
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-              {NAVEGANTE_FARES.map((fare) => (
-                <div
-                  key={fare.name}
-                  className="p-4 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] flex flex-col justify-between gap-2.5"
-                >
-                  <div>
-                    <p className="text-xs font-semibold text-[#0071E3] dark:text-[#0A84FF] tabular-nums">
-                      {fare.price}
-                    </p>
-                    <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
-                      {fare.name}
-                    </h3>
-                    <p className="text-xs text-[#1D1D1F]/85 dark:text-[#F5F5F7]/85 mt-1.5 leading-relaxed">
-                      {fare.coverage}
-                    </p>
-                  </div>
-                  <p className="text-[11px] text-[#6E6E73] dark:text-[#98989D] pt-2 border-t border-black/[0.06] dark:border-white/[0.08] leading-snug">
-                    {fare.eligibility}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* Two-Column: ISCTE Campus Guide + Emergency & Daily Lisbon Info */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-              <div className="flex items-center justify-between pb-3.5 border-b border-black/[0.06] dark:border-white/[0.08]">
-                <div>
-                  <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
-                    Av. das Forças Armadas · Entrecampos
-                  </p>
-                  <h2 className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
-                    ISCTE Architecture Campus
-                  </h2>
-                </div>
-                <GraduationCap className="w-5 h-5 text-[#0071E3] dark:text-[#0A84FF]" aria-hidden="true" />
-              </div>
-
-              <div className="space-y-3">
-                {ISCTE_CAMPUS_INFO.map((item) => (
-                  <div key={item.title} className="p-3.5 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] space-y-1">
-                    <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
-                      {item.title}
-                    </h3>
-                    <p className="text-xs text-[#6E6E73] dark:text-[#98989D] leading-relaxed">
-                      {item.detail}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-              <div className="flex items-center justify-between pb-3.5 border-b border-black/[0.06] dark:border-white/[0.08]">
-                <div>
-                  <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
-                    Health, money & local etiquette
-                  </p>
-                  <h2 className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
-                    Lisbon Daily Essentials
-                  </h2>
-                </div>
-                <ShieldAlert className="w-5 h-5 text-[#0071E3] dark:text-[#0A84FF]" aria-hidden="true" />
-              </div>
-
-              <div className="space-y-3">
-                {LISBON_ESSENTIALS_INFO.map((item) => (
-                  <div key={item.label} className="p-3.5 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] space-y-1">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
-                        {item.label}
-                      </h3>
-                      <span className="text-xs font-semibold tabular-nums text-[#0071E3] dark:text-[#0A84FF] shrink-0">
-                        {item.value}
-                      </span>
-                    </div>
-                    <p className="text-xs text-[#6E6E73] dark:text-[#98989D] leading-relaxed">
-                      {item.note}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
-        </div>
-      )}
-
-      {/* SUB-TAB 2: STRUCTURED BUREAUCRACY CHECKLISTS & SAVED SPOTS */}
-      {subTab === 'checklists' && (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          <div className="lg:col-span-8 space-y-5">
-            {BUREAUCRACY_CHECKLISTS.map((group) => {
-              const doneCount = group.steps.filter((s) => checklistDone[s.id]).length;
-              const verified = verifications[group.id];
-              const isVerifying = verifyingTopic === group.id;
-
-              return (
-                <section
-                  key={group.id}
-                  className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 pb-4 border-b border-black/[0.06] dark:border-white/[0.08]">
-                    <div>
-                      <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D] tabular-nums">
-                        {group.priority} · {doneCount} of {group.steps.length} complete
-                      </p>
-                      <h2 className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
-                        {group.topic}
-                      </h2>
-                      <p className="text-xs text-[#6E6E73] dark:text-[#98989D] mt-0.5">
-                        {group.subtitle}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {group.officialUrl && (
-                        <a
-                          href={group.officialUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="min-h-[36px] px-3 rounded-full bg-[#0071E3]/10 dark:bg-[#0A84FF]/15 text-[#0071E3] dark:text-[#0A84FF] text-xs font-semibold inline-flex items-center gap-1 hover:opacity-80"
-                        >
-                          <span>{group.officialLabel || 'Official Site'}</span>
-                          <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                        </a>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleVerifyTopic(group.id, group.topic, group.searchPromptContext)
-                        }
-                        disabled={isVerifying}
-                        title="Optional online rules check"
-                        className="min-h-[36px] px-3 rounded-full bg-[#F5F5F7] dark:bg-[#2C2C2E] hover:bg-black/[0.08] dark:hover:bg-white/[0.14] text-[#6E6E73] dark:text-[#98989D] text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap cursor-pointer"
-                      >
-                        <RefreshCw
-                          className={`w-3.5 h-3.5 ${isVerifying ? 'animate-spin' : ''}`}
-                          aria-hidden="true"
-                        />
-                        <span>{isVerifying ? 'Checking…' : 'Check Updates'}</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Structured Metadata Strip (Where, Cost, Documents) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-                    <div className="p-3 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E]">
-                      <p className="text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D] flex items-center gap-1">
-                        <MapPin className="w-3 h-3" aria-hidden="true" />
-                        <span>Where to go</span>
-                      </p>
-                      <p className="text-[#1D1D1F] dark:text-[#F5F5F7] font-medium mt-0.5 leading-snug">
-                        {group.whereToGo}
-                      </p>
-                    </div>
-                    <div className="p-3 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E]">
-                      <p className="text-[11px] font-medium text-[#6E6E73] dark:text-[#98989D]">
-                        Typical Cost
-                      </p>
-                      <p className="text-[#1D1D1F] dark:text-[#F5F5F7] font-medium mt-0.5 leading-snug">
-                        {group.estimatedCost}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                    <span className="font-semibold text-[#6E6E73] dark:text-[#98989D] mr-1">
-                      Bring:
-                    </span>
-                    {group.documentsNeeded.map((doc) => (
-                      <span
-                        key={doc}
-                        className="px-2.5 py-1 rounded-lg bg-[#F5F5F7] dark:bg-[#2C2C2E] text-[#1D1D1F] dark:text-[#F5F5F7]"
-                      >
-                        {doc}
-                      </span>
-                    ))}
-                  </div>
-
-                  <div className="space-y-1 pt-1">
-                    {group.steps.map((step) => {
-                      const checked = !!checklistDone[step.id];
-                      return (
-                        <button
-                          key={step.id}
-                          type="button"
-                          onClick={() => onToggleChecklistStep(step.id)}
-                          className="w-full text-left py-2.5 px-2.5 -mx-2.5 rounded-xl hover:bg-black/[0.03] dark:hover:bg-white/[0.04] flex items-start gap-3 transition-colors cursor-pointer"
-                        >
-                          {checked ? (
-                            <CheckCircle2
-                              className="w-5 h-5 text-[#0071E3] dark:text-[#0A84FF] mt-0.5 shrink-0"
-                              aria-hidden="true"
-                            />
-                          ) : (
-                            <Circle
-                              className="w-5 h-5 text-[#6E6E73]/60 dark:text-[#98989D]/60 mt-0.5 shrink-0"
-                              aria-hidden="true"
-                            />
-                          )}
-                          <span
-                            className={`text-sm leading-snug ${
-                              checked
-                                ? 'line-through text-[#6E6E73] dark:text-[#98989D]'
-                                : 'text-[#1D1D1F] dark:text-[#F5F5F7]'
-                            }`}
-                          >
-                            {step.label}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {verifyError[group.id] && (
-                    <p className="text-xs text-red-600 dark:text-red-400">
-                      {verifyError[group.id]}
-                    </p>
-                  )}
-
-                  {verified && (
-                    <div className="p-4 rounded-2xl bg-[#0071E3]/[0.06] dark:bg-[#0A84FF]/[0.12] space-y-2.5">
-                      <div className="flex items-center justify-between gap-2 text-xs font-medium text-[#0071E3] dark:text-[#0A84FF]">
-                        <span>Latest verified online update</span>
-                        <span>{new Date(verified.verifiedAt).toLocaleDateString()}</span>
-                      </div>
-                      <p className="text-xs text-[#1D1D1F] dark:text-[#F5F5F7] leading-relaxed">
-                        {verified.summary}
-                      </p>
-                      <p className="text-xs font-medium text-[#1D1D1F] dark:text-[#F5F5F7]">
-                        Fees & eligibility:{' '}
-                        <span className="font-normal text-[#6E6E73] dark:text-[#98989D]">
-                          {verified.currentFeesOrEligibility}
-                        </span>
-                      </p>
-                      {verified.sources?.length > 0 && (
-                        <div className="pt-2 border-t border-black/[0.06] dark:border-white/[0.08] flex flex-col gap-1">
-                          {verified.sources.map((src, i) => (
-                            <a
-                              key={i}
-                              href={src.uri}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 text-xs text-[#0071E3] dark:text-[#0A84FF] hover:underline truncate"
-                            >
-                              <ExternalLink className="w-3 h-3 shrink-0" aria-hidden="true" />
-                              <span className="truncate">{src.title}</span>
-                            </a>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </section>
-              );
-            })}
-          </div>
-
-          {/* Right: Saved Offline Spots */}
-          <aside className="lg:col-span-4 rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-            <div className="pb-3.5 border-b border-black/[0.06] dark:border-white/[0.08]">
-              <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
-                Saved offline
-              </p>
-              <h2 className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
-                Lisbon Spots ({savedSpots.length})
-              </h2>
-            </div>
-
-            {savedSpots.length === 0 ? (
-              <p className="text-xs text-[#6E6E73] dark:text-[#98989D] leading-relaxed">
-                Spots you save from the Atlas map (architecture sites, print shops, study cafes, and tascas) appear here automatically for offline access.
-              </p>
-            ) : (
-              <div className="divide-y divide-black/[0.06] dark:divide-white/[0.08]">
-                {savedSpots.map((spot) => (
-                  <div key={spot.id} className="py-3.5 space-y-1.5">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
-                          {spot.displayName}
-                        </p>
-                        <p className="text-xs text-[#6E6E73] dark:text-[#98989D] truncate">
-                          {spot.formattedAddress}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => onRemoveSavedSpot(spot.id)}
-                        aria-label={`Remove ${spot.displayName}`}
-                        className="min-w-[36px] min-h-[36px] rounded-full hover:bg-black/[0.05] dark:hover:bg-white/[0.08] flex items-center justify-center text-[#6E6E73] dark:text-[#98989D] hover:text-red-600 dark:hover:text-red-400 shrink-0 cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                    {spot.note && (
-                      <p className="text-xs text-[#1D1D1F] dark:text-[#F5F5F7] bg-[#F5F5F7] dark:bg-[#2C2C2E] px-3 py-2 rounded-xl">
-                        {spot.note}
-                      </p>
-                    )}
-                    {spot.googleMapsURI && (
-                      <a
-                        href={spot.googleMapsURI}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1 text-xs font-medium text-[#0071E3] dark:text-[#0A84FF] hover:underline"
-                      >
-                        <span>Open in Maps</span>
-                        <ExternalLink className="w-3 h-3" aria-hidden="true" />
-                      </a>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </aside>
-        </div>
-      )}
-
-      {/* SUB-TAB 3: EUROPEAN PORTUGUESE PHRASES & SEARCHABLE GLOSSARY (ZERO-AI DEFAULT) */}
+      {/* ================================================================= */}
+      {/* SUB-TAB 1: SPOKEN EUROPEAN PORTUGUESE & SEARCHABLE GLOSSARY       */}
+      {/* ================================================================= */}
       {subTab === 'phrases' && (
         <div className="space-y-7">
-          {/* Instant Offline Search */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            <div className="relative flex-1">
-              <Search
-                className="w-4 h-4 text-[#6E6E73] dark:text-[#98989D] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none"
-                aria-hidden="true"
-              />
-              <input
-                type="text"
-                value={phraseQuery}
-                onChange={(e) => setPhraseQuery(e.target.value)}
-                placeholder="Search offline phrases & Lisbon terms (e.g. bica, couvert, caução, A1, metro)…"
-                className="w-full min-h-[46px] pl-11 pr-4 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-black/[0.08] dark:border-white/[0.10] focus:border-[#0071E3] dark:focus:border-[#0A84FF] text-sm text-[#1D1D1F] dark:text-[#F5F5F7] placeholder:text-[#6E6E73] dark:placeholder:text-[#98989D] focus:outline-none"
-              />
-            </div>
+          <div className="relative">
+            <Search
+              className="w-4 h-4 text-[#6E6E73] dark:text-[#98989D] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none"
+              aria-hidden="true"
+            />
+            <input
+              type="text"
+              value={phraseQuery}
+              onChange={(e) => setPhraseQuery(e.target.value)}
+              placeholder="Search offline phrases & Lisbon terms (e.g. bica, couvert, caução, A1, metro)…"
+              className="w-full min-h-[46px] pl-11 pr-4 rounded-2xl bg-white dark:bg-[#1C1C1E] border border-black/[0.08] dark:border-white/[0.10] focus:border-[#0071E3] dark:focus:border-[#0A84FF] text-sm text-[#1D1D1F] dark:text-[#F5F5F7] placeholder:text-[#6E6E73] dark:placeholder:text-[#98989D] focus:outline-none"
+            />
           </div>
 
-          {/* Curated Spoken Phrases Section */}
           <section className="space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
@@ -728,7 +319,7 @@ export const GuideView: React.FC<GuideViewProps> = ({
                   Spoken Lisbon Portuguese (pt-PT)
                 </h2>
                 <p className="text-xs text-[#6E6E73] dark:text-[#98989D]">
-                  Tap the speaker button on any phrase for European Portuguese pronunciation.
+                  Tap the speaker button to hear natural European Portuguese pronunciation; tap again to stop.
                 </p>
               </div>
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
@@ -772,19 +363,7 @@ export const GuideView: React.FC<GuideViewProps> = ({
                         {p.portuguese}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => onSpeakPt(p.portuguese)}
-                      disabled={speakingText === p.portuguese}
-                      aria-label={`Play European Portuguese audio for ${p.english}`}
-                      className="min-w-[42px] min-h-[42px] rounded-full bg-[#0071E3]/10 dark:bg-[#0A84FF]/15 text-[#0071E3] dark:text-[#0A84FF] hover:bg-[#0071E3] hover:text-white dark:hover:bg-[#0A84FF] dark:hover:text-white flex items-center justify-center transition-colors shrink-0 cursor-pointer"
-                    >
-                      {speakingText === p.portuguese ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Volume2 className="w-4 h-4" />
-                      )}
-                    </button>
+                    {renderSpeakButton(p.portuguese, p.english)}
                   </div>
                   <div className="pt-2.5 border-t border-black/[0.06] dark:border-white/[0.08] space-y-1">
                     <p className="text-xs font-medium text-[#0071E3] dark:text-[#0A84FF] leading-relaxed">
@@ -917,14 +496,7 @@ export const GuideView: React.FC<GuideViewProps> = ({
                         {customResult.culturalNote}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => onSpeakPt(customResult.portuguese)}
-                      className="min-h-[40px] px-3.5 rounded-full bg-[#0071E3] dark:bg-[#0A84FF] text-white text-xs font-semibold inline-flex items-center gap-1.5 shrink-0 cursor-pointer"
-                    >
-                      <Volume2 className="w-4 h-4" />
-                      <span>Speak</span>
-                    </button>
+                    {renderSpeakButton(customResult.portuguese, 'custom phrase')}
                   </div>
                 )}
               </form>
@@ -933,7 +505,130 @@ export const GuideView: React.FC<GuideViewProps> = ({
         </div>
       )}
 
-      {/* SUB-TAB 4: CAMERA & TEXT DECODER (OPTIONAL AI VISION TOOL) */}
+      {/* ================================================================= */}
+      {/* SUB-TAB 2: LISBON TRANSIT NETWORK, FARES & STREET ETIQUETTE       */}
+      {/* ================================================================= */}
+      {subTab === 'transit' && (
+        <div className="space-y-6">
+          <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div className="flex items-start justify-between gap-3 pb-4 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div>
+                <p className="text-xs font-medium text-[#0071E3] dark:text-[#0A84FF]">
+                  Metro de Lisboa · CP Trains · Fertagus
+                </p>
+                <h2 className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
+                  Lisbon Transit Network Guide
+                </h2>
+              </div>
+              <TrainFront className="w-6 h-6 text-[#0071E3] dark:text-[#0A84FF] shrink-0" aria-hidden="true" />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {LISBON_TRANSIT_LINES.map((line) => (
+                <div
+                  key={line.id}
+                  className="p-4 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className="px-2.5 py-1 rounded-lg text-xs font-semibold"
+                      style={{ backgroundColor: line.color, color: line.textColor }}
+                    >
+                      {line.badge}
+                    </span>
+                    <span className="text-[11px] text-[#6E6E73] dark:text-[#98989D] tabular-nums">
+                      {line.frequency}
+                    </span>
+                  </div>
+                  <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                    {line.name}
+                  </h3>
+                  <p className="text-xs text-[#6E6E73] dark:text-[#98989D] leading-relaxed">
+                    {line.route}
+                  </p>
+                  <p className="text-xs text-[#1D1D1F] dark:text-[#F5F5F7] pt-1.5 border-t border-black/[0.06] dark:border-white/[0.08] leading-relaxed">
+                    <strong className="text-[#0071E3] dark:text-[#0A84FF]">For ISCTE:</strong>{' '}
+                    {line.iscteNote}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div>
+                <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
+                  Monthly passes & pay-as-you-go
+                </p>
+                <h2 className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
+                  Navegante & Train Tickets
+                </h2>
+              </div>
+              <Ticket className="w-5 h-5 text-[#0071E3] dark:text-[#0A84FF] shrink-0" aria-hidden="true" />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+              {NAVEGANTE_FARES.map((fare) => (
+                <div
+                  key={fare.name}
+                  className="p-4 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] flex flex-col justify-between gap-2.5"
+                >
+                  <div>
+                    <p className="text-xs font-semibold text-[#0071E3] dark:text-[#0A84FF] tabular-nums">
+                      {fare.price}
+                    </p>
+                    <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
+                      {fare.name}
+                    </h3>
+                    <p className="text-xs text-[#1D1D1F]/85 dark:text-[#F5F5F7]/85 mt-1.5 leading-relaxed">
+                      {fare.coverage}
+                    </p>
+                  </div>
+                  <p className="text-[11px] text-[#6E6E73] dark:text-[#98989D] pt-2 border-t border-black/[0.06] dark:border-white/[0.08] leading-snug">
+                    {fare.eligibility}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+            <div className="flex items-center justify-between pb-3.5 border-b border-black/[0.06] dark:border-white/[0.08]">
+              <div>
+                <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
+                  Quick street reference
+                </p>
+                <h2 className="text-xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
+                  Emergency Numbers & Local Etiquette
+                </h2>
+              </div>
+              <ShieldAlert className="w-5 h-5 text-[#0071E3] dark:text-[#0A84FF]" aria-hidden="true" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {LISBON_ESSENTIALS_INFO.map((item) => (
+                <div key={item.label} className="p-3.5 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] space-y-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]">
+                      {item.label}
+                    </h3>
+                    <span className="text-xs font-semibold tabular-nums text-[#0071E3] dark:text-[#0A84FF] shrink-0">
+                      {item.value}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#6E6E73] dark:text-[#98989D] leading-relaxed">
+                    {item.note}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* SUB-TAB 3: CAMERA & TEXT DECODER (OPTIONAL AI VISION TOOL)        */}
+      {/* ================================================================= */}
       {subTab === 'decoder' && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           <form
@@ -1079,7 +774,6 @@ export const GuideView: React.FC<GuideViewProps> = ({
             {decodeError && <p className="text-xs text-red-600 dark:text-red-400">{decodeError}</p>}
           </form>
 
-          {/* Decoded Result */}
           <div className="lg:col-span-7 space-y-5">
             {decodedResult ? (
               <article className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
@@ -1149,19 +843,7 @@ export const GuideView: React.FC<GuideViewProps> = ({
                               {rp.phonetic}
                             </p>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => onSpeakPt(rp.portuguese)}
-                            disabled={speakingText === rp.portuguese}
-                            aria-label={`Listen to ${rp.portuguese}`}
-                            className="min-w-[42px] min-h-[42px] rounded-full bg-white dark:bg-[#1C1C1E] text-[#0071E3] dark:text-[#0A84FF] shadow-sm flex items-center justify-center hover:scale-105 transition-transform shrink-0 cursor-pointer"
-                          >
-                            {speakingText === rp.portuguese ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : (
-                              <Volume2 className="w-4 h-4" />
-                            )}
-                          </button>
+                          {renderSpeakButton(rp.portuguese, rp.english)}
                         </div>
                       ))}
                     </div>
@@ -1208,6 +890,86 @@ export const GuideView: React.FC<GuideViewProps> = ({
             )}
           </div>
         </div>
+      )}
+
+      {/* ================================================================= */}
+      {/* SUB-TAB 4: SAVED OFFLINE SPOTS WITH GOOGLE & APPLE MAPS BUTTONS   */}
+      {/* ================================================================= */}
+      {subTab === 'saved' && (
+        <section className="rounded-3xl bg-white dark:bg-[#1C1C1E] border border-black/[0.06] dark:border-white/[0.08] p-5 sm:p-6 space-y-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
+          <div className="flex items-start justify-between gap-3 pb-3.5 border-b border-black/[0.06] dark:border-white/[0.08]">
+            <div>
+              <p className="text-xs font-medium text-[#6E6E73] dark:text-[#98989D]">
+                Stored offline on your device
+              </p>
+              <h2 className="text-2xl font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] mt-0.5">
+                Saved Lisbon Spots ({savedSpots.length})
+              </h2>
+            </div>
+            <Bookmark className="w-5 h-5 text-[#0071E3] dark:text-[#0A84FF] shrink-0" aria-hidden="true" />
+          </div>
+
+          {savedSpots.length === 0 ? (
+            <p className="text-sm text-[#6E6E73] dark:text-[#98989D] leading-relaxed py-4">
+              Spots you save from the Atlas map (architecture sites, print shops, study cafes, and tascas) appear here automatically for offline access with direct Google Maps and Apple Maps launch links.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {savedSpots.map((spot) => (
+                <div
+                  key={spot.id}
+                  className="p-4 rounded-2xl bg-[#F5F5F7] dark:bg-[#2C2C2E] flex flex-col justify-between gap-3"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-base font-semibold text-[#1D1D1F] dark:text-[#F5F5F7] truncate">
+                          {spot.displayName}
+                        </p>
+                        <p className="text-xs text-[#6E6E73] dark:text-[#98989D] truncate">
+                          {spot.formattedAddress}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onRemoveSavedSpot(spot.id)}
+                        aria-label={`Remove ${spot.displayName}`}
+                        className="min-w-[36px] min-h-[36px] rounded-full hover:bg-black/[0.06] dark:hover:bg-white/[0.10] flex items-center justify-center text-[#6E6E73] dark:text-[#98989D] hover:text-red-600 dark:hover:text-red-400 shrink-0 cursor-pointer"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    {spot.note && (
+                      <p className="text-xs text-[#1D1D1F] dark:text-[#F5F5F7] bg-white dark:bg-[#1C1C1E] px-3 py-2 rounded-xl">
+                        {spot.note}
+                      </p>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <a
+                      href={buildGoogleMapsPlaceUrl(spot.location, spot.displayName, spot.googleMapsURI)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[36px] px-3 rounded-xl bg-[#0071E3] dark:bg-[#0A84FF] text-white text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:opacity-90"
+                    >
+                      <span>Google Maps</span>
+                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                    </a>
+                    <a
+                      href={buildAppleMapsPlaceUrl(spot.location, spot.displayName)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[36px] px-3 rounded-xl bg-white dark:bg-[#1C1C1E] text-[#1D1D1F] dark:text-[#F5F5F7] text-xs font-semibold inline-flex items-center justify-center gap-1.5 hover:opacity-90"
+                    >
+                      <span>Apple Maps</span>
+                      <ExternalLink className="w-3 h-3" aria-hidden="true" />
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       )}
     </div>
   );

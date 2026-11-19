@@ -488,6 +488,29 @@ English: "${english.trim()}"`,
   }
 });
 
+function wrapPcmAsWav(pcmBuffer: Buffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16): Buffer {
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const dataSize = pcmBuffer.length;
+  const header = Buffer.alloc(44);
+
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16); // PCM fmt chunk size
+  header.writeUInt16LE(1, 20); // AudioFormat = 1 (PCM)
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(dataSize, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
+}
+
 // Spoken European Portuguese Audio via Gemini TTS (gemini-3.8-flash-lite-tts)
 app.post('/api/ai/speak-pt', async (req, res) => {
   try {
@@ -522,13 +545,42 @@ app.post('/api/ai/speak-pt', async (req, res) => {
       },
     });
 
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (!base64Audio) {
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    const audioPart = parts.find((p: any) => p?.inlineData?.data);
+    const inlineData = audioPart?.inlineData;
+    if (!inlineData?.data) {
       return res.status(502).json({ error: 'Speech model returned no audio data.' });
     }
 
+    const rawBuffer = Buffer.from(inlineData.data, 'base64');
+    const rawMime = String(inlineData.mimeType || '').toLowerCase();
+
+    const isEncodedContainer =
+      rawMime.includes('mpeg') ||
+      rawMime.includes('mp3') ||
+      rawMime.includes('ogg') ||
+      rawMime.includes('mp4') ||
+      rawMime.includes('webm');
+    const hasRiffHeader =
+      rawBuffer.length >= 12 &&
+      rawBuffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      rawBuffer.subarray(8, 12).toString('ascii') === 'WAVE';
+
+    if (isEncodedContainer || hasRiffHeader) {
+      return res.json({
+        audioBase64: rawBuffer.toString('base64'),
+        mimeType: hasRiffHeader ? 'audio/wav' : inlineData.mimeType || 'audio/mpeg',
+      });
+    }
+
+    // Gemini TTS typically emits headerless 24kHz 16-bit mono PCM (audio/L16;codec=pcm;rate=24000).
+    // Wrap in a standard 44-byte RIFF/WAVE header so iPhone Safari & Chrome decode it natively.
+    const rateMatch = rawMime.match(/rate=(\d+)/i);
+    const sampleRate = rateMatch ? Number(rateMatch[1]) || 24000 : 24000;
+    const wavBuffer = wrapPcmAsWav(rawBuffer, sampleRate, 1, 16);
+
     return res.json({
-      audioBase64: base64Audio,
+      audioBase64: wavBuffer.toString('base64'),
       mimeType: 'audio/wav',
     });
   } catch (err: any) {
